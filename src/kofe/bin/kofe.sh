@@ -47,6 +47,58 @@ show_help() {
   echo
 }
 
+function configure_tls {
+
+  PATH_CERT="/usr/share/elasticsearch"
+  ELASTIC_IP=$1
+
+  pushd /usr/share/elasticsearch
+    echo "xpack.security.enabled: true" >> /etc/elasticsearch/elasticsearch.yml
+    systemctl restart elasticsearch
+
+    ./bin/elasticsearch-certutil ca -out "$PATH_CERT/kofe-stack-ca.p12"
+
+    if [ "$?" -ne 0 ]; then
+      echo "ERROR: Configuring CA certificate"
+      return
+    fi
+
+    ./bin/elasticsearch-certutil cert --ca "$PATH_CERT/kofe-stack-ca.p12" -out "$PATH_CERT/kofe-stack-certificates.p12"
+
+    if [ ! -d "/etc/elasticsearch/certs/" ]; then
+      mkdir -p /etc/elasticsearch/certs
+    fi
+
+    /usr/bin/cp -f "$PATH_CERT/kofe-stack-ca.p12" /etc/elasticsearch/certs
+    /usr/bin/cp -f "$PATH_CERT/kofe-stack-certificates.p12" /etc/elasticsearch/certs
+    /usr/bin/cp -f "$PATH_CERT/kofe-stack-certificates.p12" /etc/elasticsearch
+
+    cat << EOF >> /etc/elasticsearch/elasticsearch.yml
+xpack.security.transport.ssl.enabled: true
+xpack.security.transport.ssl.verification_mode: certificate
+xpack.security.transport.ssl.keystore.path: kofe-stack-certificates.p12
+xpack.security.transport.ssl.truststore.path: kofe-stack-certificates.p12
+EOF
+
+  chmod 0660 /etc/elasticsearch/kofe-stack-certificates.p12
+  ./bin/elasticsearch-setup-passwords auto -b > ./creds.txt
+
+  kibana_pass=$(grep kibana_system ./creds.txt | grep PASSWORD | cut -d " " -f 4)
+  sed -i -e "s/#elasticsearch.password:.*/elasticsearch.password: \"${kibana_pass}\"/g" /etc/kibana/kibana.yml
+  sed -i -e "s/#elasticsearch.username: \"kibana_system\"/elasticsearch.username: \"kibana_system\"/g" /etc/kibana/kibana.yml
+
+
+  check_input "Enter default administator username [default: admin]" "" "admin"
+  username=$INPUTTEXT
+
+  check_input "Enter default administator password [default: admin123!]" "" "admin123!"
+  password=$INPUTTEXT
+
+  /usr/share/elasticsearch/bin/elasticsearch-users useradd ${username} -p ${password} -r superuser
+  systemctl restart elasticsearch
+
+}
+
 function setup_kofe {
   echo
   echo "Beginning KOFE setup process... Please be patient."
@@ -116,6 +168,18 @@ EOF
   kibana_ip=$INPUTTEXT
 
   sed -i "s/#server.host.*/server.host: \"$kibana_ip\"/g" /etc/kibana/kibana.yml
+
+  check_input "Would you like to setup SSL/TLS for the Elastic Stack [Default: yes]" "" "yes"
+  is_TLS=$INPUTTEXT
+
+  if [ "$INPUTTEXT" != "no" ]; then
+    echo "Beginning TLS/SSL configuration process"
+    configure_tls $servers
+  else
+    echo "User opted to not setup TLS configuration. Skipping"
+  fi
+
+
 
   systemctl enable kibana
   systemctl start kibana
