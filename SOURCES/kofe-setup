@@ -1,0 +1,175 @@
+#!/bin/sh
+# Atomicorp, Inc
+# Licensed under the AGPL (https://www.gnu.org/licenses/agpl-3.0.en.html)
+
+
+# functions
+function check_input {
+  message=$1
+  validate=$2
+  default=$3
+
+  while [ $? -ne 1 ]; do
+    echo -n "$message "
+    read INPUTTEXT 
+    if [ "$INPUTTEXT" == "" -a "$default" != "" ]; then
+      INPUTTEXT=$default
+      return 1
+    fi
+    echo $INPUTTEXT | egrep -q "$validate" && return 1
+    echo "Invalid input"
+  done
+
+}
+
+
+
+function add_user {
+
+        echo -n "Add user [Default: ] : "
+	read USERNAME
+
+	if [ ! $USERNAME ]; then
+		echo "  Skipped"
+	else
+
+                # Suppress output of password.
+                if [[ -t 0 ]]; then
+                        stty -echo
+                fi
+
+                # Prompt the user for the desired password and verify its accuracy.  
+                PASSCONFIRMED=0
+                while [ $PASSCONFIRMED -lt 1 ]; do
+                        echo -n "Enter Password: "
+                        read PASSWORD
+                        echo
+
+                        echo -n "Verify Password: "
+                        read PASSWORD2
+                        echo
+
+
+                        if [ "$PASSWORD" == "$PASSWORD2" ]; then
+                                if [ "$PASSWORD" == "" ]; then
+                                        echo "Empty password not allowed."
+                                        PASSCONFIRMED=0
+                                else
+                                        PASSCONFIRMED=1
+                                fi
+                                echo
+                        else
+                                echo "Passwords do not match"
+                                echo
+                        fi
+                done
+                stty echo
+
+		if [ -f /var/www/htpasswd ] ; then
+			htpasswd -b /var/www/htpasswd $USERNAME $PASSWORD
+		else
+			htpasswd -cb /var/www/htpasswd $USERNAME $PASSWORD
+		fi
+
+	fi
+
+}
+# 
+echo
+echo "KOFE Configuration Manager"
+echo
+
+echo "Setting up repos"
+cat << EOF > /etc/yum.repos.d/elasticsearch.repo
+[elasticsearch-7.x]
+name=Elasticsearch repository for 7.x packages
+baseurl=https://artifacts.elastic.co/packages/7.x/yum
+gpgcheck=1
+gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
+enabled=1
+autorefresh=1
+type=rpm-md
+EOF
+
+echo
+echo
+
+echo "Installating packages"
+yum -y install httpd mod_ssl GeoIP elasticsearch kibana GeoIP-GeoLite-data
+
+echo
+echo
+
+#check_input "Is this a local or remote AEO installation? (local/remote) [Default: remote]" "local|remote" "remote"
+
+
+#if  [[ "$INPUTTEXT" == "local" ]]; then
+
+#	# Local/Remote
+#	if ! egrep -q "ossec:.*logstash" /etc/group ; then
+#		usermod -a -G ossec logstash
+#	else
+#		echo "ERROR: ossec was not detected.. exiting"
+#		echo
+#		exit 1
+#	fi
+
+#	# Copy in local config
+#	cp /usr/share/kofe/local.conf /etc/logstash/conf.d/
+#else
+
+#	cp  /usr/share/kofe/listen.conf /etc/logstash/conf.d/
+#fi
+
+# Add to startup
+/bin/systemctl daemon-reload
+/bin/systemctl enable elasticsearch.service
+service elasticsearch start
+
+# TODO: Elastic API, this allows for configuring elasticsearch based
+# on a set of json configuration directives. 
+#    curl -XPUT "http://localhost:9200/_template/ossec/" -d "@<example>.json"
+# Success will return: 
+# {"acknowledged":true}
+
+# Start logstash
+#systemctl enable logstash 
+#systemctl start logstash 
+
+# Kibana config
+sed -i "s/#server.basePath.*/server.basePath: \"\/kibana\"/g" /etc/kibana/kibana.yml
+
+# Set up reverse proxy apache
+if ! grep -q kibana /etc/httpd/conf.d/ssl.conf ; then
+	cp /usr/share/kofe/ssl.conf /etc/httpd/conf.d/ssl.conf
+fi  
+
+
+systemctl enable kibana
+systemctl start kibana
+
+systemctl enable httpd
+systemctl start httpd
+
+# Set up passwd auth accounts
+if [ -f /var/www/htpasswd ]; then
+	echo
+	echo "The following users are configured: "
+	echo
+	for line in $(cat /var/www/htpasswd |awk -F: '{print $1}') ; do
+		echo "  $line"
+	done
+	echo
+	echo 
+
+fi
+
+# Add user
+add_user
+
+
+echo
+echo "KOFE Installation Complete!"
+echo
+echo "  https://<IP>/kibana"
+echo 
